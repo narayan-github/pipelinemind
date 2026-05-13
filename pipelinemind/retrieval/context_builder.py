@@ -16,6 +16,10 @@ from dataclasses import dataclass, field
 from pm_config import settings
 from retrieval.chroma_retriever import RetrievedChunk
 
+# Chunks with sigmoid-normalised reranker score below this threshold
+# are dropped from context injection — they are irrelevant documents.
+MIN_USEFUL_SCORE = 0.10
+
 logger = logging.getLogger(__name__)
 
 APPROX_CHARS_PER_TOKEN = 4
@@ -66,6 +70,17 @@ class ContextBuilder:
         used_chars = 0
         has_pii = False
         citations: list[dict] = []
+
+        # Filter out irrelevant documents (sigmoid score < MIN_USEFUL_SCORE)
+        # These are cross-encoder negatives — including them degrades answers.
+        useful_chunks = [c for c in chunks if c.score >= MIN_USEFUL_SCORE]
+        if not useful_chunks:
+            logger.info(
+                "All %d chunks below MIN_USEFUL_SCORE=%.2f — using top-1 only",
+                len(chunks), MIN_USEFUL_SCORE,
+            )
+            useful_chunks = chunks[:1]  # always keep at least one result
+        chunks = useful_chunks
 
         for chunk in chunks:
             # For code chunks, inject raw implementation; for others use summary
