@@ -1,7 +1,7 @@
 """
 Pydantic v2 models for all MCP tool input parameters.
 Invalid inputs are caught here before execution and returned to the LLM
-as structured error strings, enabling self-correction without crashing.
+as structured error strings for self-correction.
 """
 from __future__ import annotations
 
@@ -10,11 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class TriggerDQCheckInput(BaseModel):
-    table_name: str = Field(..., min_length=1, description="Target table name")
-    rules_preset: str = Field(
-        default="standard",
-        description="GE expectations preset: standard | strict | minimal",
-    )
+    table_name: str = Field(..., min_length=1)
+    rules_preset: str = Field(default="standard")
 
     @field_validator("rules_preset")
     @classmethod
@@ -48,10 +45,7 @@ class AnalyzeLineageImpactInput(BaseModel):
 
 
 class SearchPIITablesInput(BaseModel):
-    domain_filter: Optional[str] = Field(
-        default=None,
-        description="Optional domain to filter (finance, users, product, operations)",
-    )
+    domain_filter: Optional[str] = Field(default=None)
 
 
 class GetSLOReportInput(BaseModel):

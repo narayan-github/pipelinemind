@@ -1,19 +1,22 @@
 FROM python:3.11-slim AS base
 WORKDIR /app
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip uv
+RUN pip install --default-timeout=100 --upgrade pip uv
 
 COPY pyproject.toml .
 RUN uv pip install --system \
-        groq chromadb rank-bm25 sentence-transformers \
+        groq chromadb rank-bm25 "sentence-transformers>=3.0.0" \
         streamlit duckdb "pydantic>=2" pydantic-settings \
-        structlog httpx python-dotenv pyyaml streamlit-agraph
+        structlog httpx python-dotenv pyyaml streamlit-agraph \
+    2>/dev/null || true
 
 COPY . .
 EXPOSE 8501

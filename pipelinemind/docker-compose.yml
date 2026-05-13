@@ -1,10 +1,50 @@
-version: "3.9"
 
 x-common-env: &common-env
   env_file: .env
   restart: unless-stopped
 
 services:
+
+  # ── One-shot: seed DuckDB (runs once, exits 0) ──────────────────────────────
+  seeder:
+    <<: *common-env
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: pipelinemind_seeder
+    volumes:
+      - pipelinemind_data:/app/data
+    environment:
+      PYTHONPATH: "."
+    command: ["python", "db/seeder.py"]
+    restart: "no"
+
+  # ── One-shot: build ChromaDB + BM25 index ───────────────────────────────────
+  ingest:
+    <<: *common-env
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: pipelinemind_ingest
+    volumes:
+      - pipelinemind_data:/app/data
+    environment:
+      PYTHONPATH: "."
+    command: [
+      "python", "ingestion/ingest_pipeline.py",
+      "--repo-path", "./data/pipeline_repo",
+      "--sql-path",  "./data/sql",
+      "--yaml-path", "./data/dags",
+      "--dbt-path",  "./data/dbt_project",
+      "--skip-summaries",
+      "--force-reindex"
+    ]
+    restart: "no"
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
   api:
     <<: *common-env
     build:
@@ -14,15 +54,21 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - pipelinemind_data:/app/data
       - ./logs:/app/logs
+    environment:
+      PYTHONPATH: "."
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
-      interval: 30s
+      interval: 20s
       timeout: 10s
       retries: 5
       start_period: 60s
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
 
+  # ── Streamlit UI ─────────────────────────────────────────────────────────────
   ui:
     <<: *common-env
     build:
@@ -32,10 +78,53 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
+      - pipelinemind_data:/app/data
+    environment:
+      PYTHONPATH: "."
+      # KEY FIX: use Docker service name, not localhost
+      API_BASE_URL: "http://api:8000"
     depends_on:
       api:
         condition: service_healthy
 
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: pipelinemind_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Grafana ───────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: pipelinemind_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Provision datasource + dashboard automatically
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: pipelinemind
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipelinemind.json
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
 volumes:
+  # Named volume so data persists across container restarts
   pipelinemind_data:
+  prometheus_data:
+  grafana_data:

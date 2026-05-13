@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual env — never copy into Docker
+.venv/
+venv/
+env/
+
+# Large data directories that are volume-mounted at runtime
+data/chroma_db/
+data/model_cache/
+data/bm25_index.pkl
+data/pipelinemind.db
+
+# Logs
+logs/
+*.log
+
+# Dev/local files
+.env
+.DS_Store
+.git/
+.gitignore
+
+# Notebooks (not needed in container)
+notebooks/
+
+# Slides
+slides/
+
+# Test artifacts
+htmlcov/
+.pytest_cache/

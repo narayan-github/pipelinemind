@@ -1,0 +1,88 @@
+{
+  "title": "PipelineMind — Operations Dashboard",
+  "uid": "pipelinemind-ops",
+  "version": 1,
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Chat Requests / min",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "rate(pipelinemind_chat_requests_total[1m]) * 60", "legendFormat": "req/min"}]
+    },
+    {
+      "id": 2,
+      "title": "Chat p95 Latency (s)",
+      "type": "stat",
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "histogram_quantile(0.95, rate(pipelinemind_chat_latency_seconds_bucket[5m]))", "legendFormat": "p95"}]
+    },
+    {
+      "id": 3,
+      "title": "ChromaDB Documents",
+      "type": "stat",
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "pipelinemind_chroma_collection_size", "legendFormat": "docs"}]
+    },
+    {
+      "id": 4,
+      "title": "Groq Rate Limit Hits",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "sum(increase(pipelinemind_groq_rate_limit_hits_total[1h]))", "legendFormat": "429s/hour"}]
+    },
+    {
+      "id": 5,
+      "title": "Schema Drift Events",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "pipelinemind_schema_drift_events_active", "legendFormat": "active drifts"}]
+    },
+    {
+      "id": 6,
+      "title": "Requests by Intent",
+      "type": "piechart",
+      "gridPos": {"x": 0, "y": 4, "w": 8, "h": 8},
+      "targets": [{"expr": "sum by(intent) (rate(pipelinemind_chat_requests_total[5m]))", "legendFormat": "{{intent}}"}]
+    },
+    {
+      "id": 7,
+      "title": "Retrieval Latency Heatmap",
+      "type": "heatmap",
+      "gridPos": {"x": 8, "y": 4, "w": 12, "h": 8},
+      "targets": [{"expr": "rate(pipelinemind_retrieval_latency_seconds_bucket[5m])", "legendFormat": "{{le}}"}]
+    },
+    {
+      "id": 8,
+      "title": "Pipeline SLO %",
+      "type": "bargauge",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
+      "targets": [{"expr": "pipelinemind_pipeline_slo_pct", "legendFormat": "{{pipeline_id}}"}],
+      "options": {"orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "id": 9,
+      "title": "LLM Calls by Type",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
+      "targets": [{"expr": "sum by(call_type) (rate(pipelinemind_llm_calls_total[1m]))", "legendFormat": "{{call_type}}"}]
+    },
+    {
+      "id": 10,
+      "title": "Tool Calls Executed",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 6},
+      "targets": [{"expr": "sum by(tool_name) (increase(pipelinemind_tool_calls_total[5m]))", "legendFormat": "{{tool_name}}"}]
+    },
+    {
+      "id": 11,
+      "title": "Retrieval Confidence Distribution",
+      "type": "histogram",
+      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 6},
+      "targets": [{"expr": "rate(pipelinemind_retrieval_confidence_score_bucket[5m])", "legendFormat": "{{le}}"}]
+    }
+  ]
+}

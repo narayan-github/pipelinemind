@@ -1,24 +1,22 @@
-"""
-Pipeline health dashboard component with sparklines.
-"""
+"""Pipeline health dashboard component."""
 from __future__ import annotations
 
 import httpx
 import pandas as pd
 import streamlit as st
 
-
-API_BASE = "http://localhost:8000"
+from ui.api_client import _API_BASE
 
 
 def render_health_dashboard() -> None:
     st.header("Pipeline Health Dashboard")
 
     try:
-        resp = httpx.get(f"{API_BASE}/api/v1/pipelines", timeout=10)
+        resp = httpx.get(f"{_API_BASE}/api/v1/pipelines", timeout=10)
+        resp.raise_for_status()
         pipelines = resp.json()
     except Exception as exc:
-        st.error(f"Could not reach API: {exc}")
+        st.error(f"Could not reach API ({_API_BASE}): {exc}")
         return
 
     if not pipelines:
@@ -27,7 +25,6 @@ def render_health_dashboard() -> None:
 
     cols = st.columns(len(pipelines))
     for col, p in zip(cols, pipelines):
-        color = "green" if p["last_status"] == "success" else "red"
         with col:
             st.metric(
                 label=p["pipeline_id"],
@@ -36,14 +33,11 @@ def render_health_dashboard() -> None:
             )
 
     st.divider()
-
     selected = st.selectbox("Drill into pipeline", [p["pipeline_id"] for p in pipelines])
     if selected:
         try:
-            status_resp = httpx.get(f"{API_BASE}/api/v1/pipelines/{selected}/status", timeout=10)
-            slo_resp    = httpx.get(f"{API_BASE}/api/v1/pipelines/{selected}/slo", timeout=10)
-            status = status_resp.json()
-            slo    = slo_resp.json()
+            status = httpx.get(f"{_API_BASE}/api/v1/pipelines/{selected}/status", timeout=10).json()
+            slo    = httpx.get(f"{_API_BASE}/api/v1/pipelines/{selected}/slo",    timeout=10).json()
         except Exception as exc:
             st.error(f"Failed to fetch details: {exc}")
             return

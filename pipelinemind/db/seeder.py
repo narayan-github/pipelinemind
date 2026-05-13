@@ -1,16 +1,22 @@
 """
 DuckDB metadata store seeder.
 Reads synthetic JSON fixtures and populates all 6 metadata tables.
-Safe to re-run (INSERT OR REPLACE).
 
-DuckDB does not have executescript(); statements are executed one at a time.
+Changes vs v1:
+  - INSERT OR REPLACE removed (DuckDB binder error on non-PK UNIQUE columns).
+    Pattern is now: DELETE WHERE pk = ? then INSERT.
+  - pipeline_runs timestamps are shifted so the most-recent run lands at
+    datetime.utcnow(). This ensures rolling-window queries (window_days=30,
+    lookback_hours=24) always return data regardless of when the seeder ran.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -29,12 +35,9 @@ def _uid(*parts: str) -> str:
 
 
 def _execute_schema(con: duckdb.DuckDBPyConnection, schema_path: Path) -> None:
-    """Execute a SQL file statement-by-statement (DuckDB has no executescript)."""
+    """Execute a SQL schema file statement-by-statement."""
     sql = schema_path.read_text()
-    # Strip block comments
-    import re
     sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    statements = []
     current: list[str] = []
     for line in sql.splitlines():
         stripped = line.strip()
@@ -45,21 +48,13 @@ def _execute_schema(con: duckdb.DuckDBPyConnection, schema_path: Path) -> None:
             current.append(before)
             stmt = "\n".join(current).strip()
             if stmt:
-                statements.append(stmt)
+                try:
+                    con.execute(stmt)
+                except Exception as exc:
+                    logger.warning("Schema stmt skipped (%s): %.80s", exc, stmt)
             current = []
         else:
             current.append(line)
-    if current:
-        stmt = "\n".join(current).strip()
-        if stmt:
-            statements.append(stmt)
-
-    for stmt in statements:
-        if stmt.strip():
-            try:
-                con.execute(stmt)
-            except Exception as exc:
-                logger.warning("Schema statement skipped (%s): %.80s", exc, stmt)
 
 
 def seed_tables(con: duckdb.DuckDBPyConnection) -> int:
@@ -135,22 +130,27 @@ def seed_lineage(con: duckdb.DuckDBPyConnection) -> int:
 
 
 def seed_pipeline_runs(con: duckdb.DuckDBPyConnection) -> int:
-    from datetime import datetime, timedelta
-
+    """
+    Seed pipeline runs with timestamp shifting.
+    Shifts all run timestamps so the most-recent fixture run lands at
+    datetime.utcnow(), keeping relative spacing intact.
+    This ensures rolling-window queries (window_days=30, lookback_hours=24)
+    always find data regardless of when the seeder was executed.
+    """
     rows = json.loads((FIXTURES / "run_logs" / "pipeline_runs.json").read_text())
 
-    # Shift timestamps so the most-recent run lands at "now".
-    # Keeps relative spacing intact so rolling-window queries always find data.
+    # Compute shift offset
     timestamps = [
         datetime.fromisoformat(r["start_time"])
         for r in rows if r.get("start_time")
     ]
     if timestamps:
-        offset = datetime.utcnow() - max(timestamps)
+        latest_fixture = max(timestamps)
+        offset = datetime.utcnow() - latest_fixture
     else:
         offset = timedelta(0)
 
-    def _shift(ts_str):
+    def _shift(ts_str: str | None) -> str | None:
         if not ts_str:
             return None
         return (datetime.fromisoformat(ts_str) + offset).isoformat(timespec="seconds")
@@ -170,7 +170,7 @@ def seed_pipeline_runs(con: duckdb.DuckDBPyConnection) -> int:
              r.get("error_message"), bool(r.get("slo_met", True))],
         )
         count += 1
-    logger.info("Seeded %d pipeline runs", count)
+    logger.info("Seeded %d pipeline runs (timestamps shifted to now)", count)
     return count
 
 
@@ -227,16 +227,15 @@ def main() -> None:
     db_path = settings.duckdb_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Remove stale DB so schema is applied cleanly
+    # Drop stale DB for clean schema application
     if db_path.exists():
         db_path.unlink()
-        logger.info("Removed stale database: %s", db_path)
+        logger.info("Removed stale DB: %s", db_path)
 
     logger.info("Connecting to DuckDB at %s", db_path)
     con = duckdb.connect(str(db_path))
 
     schema_path = Path(__file__).parent / "schema.sql"
-    logger.info("Applying schema from %s", schema_path)
     _execute_schema(con, schema_path)
     logger.info("Schema applied")
 

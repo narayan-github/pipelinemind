@@ -4,9 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 source .venv/bin/activate
 export PYTHONPATH="."
-# Seed DB if not already present
 [[ -f data/pipelinemind.db ]] || python db/seeder.py
-echo "[PM] Running ingestion pipeline (full LLM summaries)..."
+echo "[PM] Running ingestion pipeline (full LLM summaries via Groq)..."
 python ingestion/ingest_pipeline.py \
     --repo-path ./data/pipeline_repo \
     --sql-path  ./data/sql \

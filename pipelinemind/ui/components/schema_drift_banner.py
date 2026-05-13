@@ -1,26 +1,24 @@
-"""
-Streamlit sidebar component: schema drift warning banner.
-Polls /api/v1/schema-drift every 5 minutes and displays alerts.
-"""
+"""Schema drift sidebar warning banner."""
 from __future__ import annotations
 
 import time
 import httpx
 import streamlit as st
 
+from ui.api_client import _API_BASE
 
-POLL_INTERVAL = 300  # seconds
+POLL_INTERVAL = 300
 
 
-def render_drift_banner(api_base: str = "http://localhost:8000") -> None:
-    now = time.time()
+def render_drift_banner() -> None:
+    now       = time.time()
     last_poll = st.session_state.get("drift_last_poll", 0)
 
     if now - last_poll > POLL_INTERVAL or "drift_events" not in st.session_state:
         try:
-            resp = httpx.get(f"{api_base}/api/v1/schema-drift", timeout=5)
+            resp = httpx.get(f"{_API_BASE}/api/v1/schema-drift", timeout=5)
             data = resp.json()
-            st.session_state["drift_events"] = data.get("drift_events", [])
+            st.session_state["drift_events"]    = data.get("drift_events", [])
             st.session_state["drift_last_poll"] = now
         except Exception:
             st.session_state.setdefault("drift_events", [])
@@ -35,5 +33,3 @@ def render_drift_banner(api_base: str = "http://localhost:8000") -> None:
                         st.warning(f"Dropped: {', '.join(e['dropped_columns'])}")
                     if e.get("added_columns"):
                         st.info(f"Added: {', '.join(e['added_columns'])}")
-                    if e.get("type_changes"):
-                        st.warning(f"Type changes: {e['type_changes']}")

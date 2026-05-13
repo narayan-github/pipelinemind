@@ -2,6 +2,7 @@
 Schema drift MCP Resource polling helper.
 Called by the Streamlit sidebar every 5 minutes to surface drift warnings
 before pipelines fail.
+Returns a safe payload if the DB does not exist or is not yet seeded.
 """
 from __future__ import annotations
 
@@ -20,21 +21,25 @@ def get_schema_drift_events() -> dict:
     """
     Compare current catalogue_columns against the latest schema_snapshot baseline.
     Returns drift events suitable for display in the Streamlit sidebar.
-    Returns a safe "not_ready" payload if the DB doesn't exist or isn't seeded yet.
+    Returns a safe 'not_ready' payload if the DB is unavailable.
     """
     if not settings.duckdb_path.exists():
         return {
             "drift_events": [],
-            "polled_at": datetime.utcnow().isoformat(),
-            "status": "db_not_seeded",
-            "message": "Run: python db/seeder.py to initialise the database.",
+            "polled_at":    datetime.utcnow().isoformat(),
+            "status":       "db_not_seeded",
+            "message":      "Run: python db/seeder.py to initialise the database.",
         }
 
     try:
         con = duckdb.connect(str(settings.duckdb_path), read_only=True)
     except Exception as exc:
         logger.warning("Could not connect to DuckDB: %s", exc)
-        return {"drift_events": [], "polled_at": datetime.utcnow().isoformat(), "status": "db_error"}
+        return {
+            "drift_events": [],
+            "polled_at":    datetime.utcnow().isoformat(),
+            "status":       "db_error",
+        }
 
     try:
         snapshots = con.execute(
@@ -42,7 +47,11 @@ def get_schema_drift_events() -> dict:
         ).fetchall()
 
         if not snapshots:
-            return {"drift_events": [], "polled_at": datetime.utcnow().isoformat(), "status": "no_baseline"}
+            return {
+                "drift_events": [],
+                "polled_at":    datetime.utcnow().isoformat(),
+                "status":       "no_baseline",
+            }
 
         drift_events = []
         for table_name, columns_json_str, captured_at in snapshots:
@@ -85,10 +94,9 @@ def get_schema_drift_events() -> dict:
         logger.warning("Schema drift check failed: %s", exc)
         return {
             "drift_events": [],
-            "polled_at": datetime.utcnow().isoformat(),
-            "status": "not_ready",
-            "message": str(exc),
+            "polled_at":    datetime.utcnow().isoformat(),
+            "status":       "not_ready",
+            "message":      str(exc),
         }
     finally:
         con.close()
-

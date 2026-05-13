@@ -49,6 +49,18 @@ async def _event_stream(
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, default=_json_default)}\n\n"
 
+    # Record Prometheus metrics
+    try:
+        CHAT_REQUESTS_TOTAL.labels(
+            intent=intent or "unknown",
+            has_pii=str(has_pii),
+        ).inc()
+        RETRIEVAL_CONFIDENCE.observe(confidence_score)
+        if low_confidence:
+            LOW_CONFIDENCE_TOTAL.inc()
+    except Exception:
+        pass
+
     yield _sse("retrieval_complete", {
         "confidence_score": round(confidence_score, 3),
         "has_pii":          has_pii,
