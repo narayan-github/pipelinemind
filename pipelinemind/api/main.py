@@ -134,3 +134,47 @@ async def agent_stats():
     """LLM router call statistics — shows model usage distribution."""
     from agent.llm_router import router as llm_router
     return llm_router.stats()
+
+
+# ── Model validation on startup ───────────────────────────────────────────────
+@app.on_event("startup")
+async def validate_groq_models():
+    """
+    Verify configured Groq models are available on startup.
+    Logs a clear ERROR if a decommissioned model is detected, rather than
+    allowing silent fallback to wrong intent classification.
+    """
+    import httpx as _httpx
+    from pm_config import settings as _s
+
+    models_to_check = {
+        "GROQ_MODEL_FAST":   _s.groq_model_fast,
+        "GROQ_MODEL_STRONG": _s.groq_model_strong,
+        "GROQ_MODEL_AGENT":  _s.groq_model_agent,
+    }
+
+    _logger = logging.getLogger("api.startup")
+    _logger.info("Validating Groq model availability...")
+
+    try:
+        resp = _httpx.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {_s.groq_api_key}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            available = {m["id"] for m in resp.json().get("data", [])}
+            for env_var, model_id in models_to_check.items():
+                if model_id in available:
+                    _logger.info("  %-25s %-40s OK", env_var, model_id)
+                else:
+                    _logger.error(
+                        "  %-25s %-40s DECOMMISSIONED OR UNAVAILABLE "
+                        "— update %s in .env",
+                        env_var, model_id, env_var,
+                    )
+        else:
+            _logger.warning("Could not verify models (status=%d)", resp.status_code)
+    except Exception as exc:
+        _logger.warning("Model validation skipped: %s", exc)
+

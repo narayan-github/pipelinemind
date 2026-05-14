@@ -1,7 +1,12 @@
 """
 Shared Pydantic-Settings configuration for PipelineMind.
-Named pm_config to avoid collision with the third-party 'config' package
-that may be installed in the virtual environment.
+Named pm_config to avoid collision with the third-party 'config' package.
+
+Model update history:
+  2024-05-14: llama3-8b-8192 decommissioned by Groq
+              → replaced with llama-3.1-8b-instant
+              llama3-70b-8192 decommissioned by Groq
+              → replaced with llama-3.3-70b-versatile
 """
 from __future__ import annotations
 
@@ -22,8 +27,13 @@ class Settings(BaseSettings):
 
     # Groq
     groq_api_key: str = Field(..., description="Groq Cloud API key")
+
+    # Model tiers — update these when Groq deprecates models
+    # Fast/cheap: intent classification, HyDE, chunk summaries
     groq_model_fast: str = "llama-3.1-8b-instant"
+    # Strong: fallback LLM classifier (rarely used — keyword fast-path handles most)
     groq_model_strong: str = "llama-3.3-70b-versatile"
+    # Agent: function-calling loop — must support tool_use
     groq_model_agent: str = "llama-3.3-70b-versatile"
 
     # Storage paths

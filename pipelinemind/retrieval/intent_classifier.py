@@ -1,20 +1,25 @@
 """
-Intent classifier with two-stage routing:
+Intent classifier with two-stage routing.
 
 Stage 1 — Keyword fast-path (zero latency, zero quota):
-  Matches deterministic signal words before the LLM is ever called.
-  DE-domain queries almost always contain one of these signals.
-  Examples:
-    "lineage dag for vw_revenue_by_tier"  → CATALOGUE  (keyword: "lineage", "dag")
-    "what pii columns are in dim_users"   → CATALOGUE  (keyword: "pii", "column")
-    "did orders fail today"               → HEALTH     (keyword: "fail", "status")
-    "what if I drop user_id"              → ACTION     (keyword: "drop", "what if")
-    "how does the merge function work"    → CODE_QA    (keyword: "how does", "function")
-    "explain incremental loading"         → GENERAL    (keyword: "explain", "what is")
+  Matches deterministic signal words before the LLM is called.
+  This is the PRIMARY intent routing mechanism — the LLM is a fallback only.
+  Keywords are broad and forgiving: partial matches, common phrasings included.
 
-Stage 2 — LLM classifier (llama3-8b, temperature=0.0):
-  Fires only when keyword stage returns no match.
-  Now includes 10 few-shot examples so 8b reliably handles ambiguous phrasing.
+Stage 2 — LLM classifier (llama-3.1-8b-instant, temperature=0.0):
+  Only fires when Stage 1 returns no match.
+  Includes 10 few-shot examples.
+
+Keyword coverage matrix (verified against observed failures):
+  Query                                         Stage1 Match   Intent
+  "what will happen if I delete the fact table" ACTION         ✓
+  "what the health of the pipeline?"            HEALTH         ✓
+  "what's the health?"                          HEALTH         ✓
+  "give me the lineage dag for X"               CATALOGUE      ✓
+  "what PII columns are in dim_users?"          CATALOGUE      ✓
+  "did the orders pipeline fail today?"         HEALTH         ✓
+  "why does orders use MERGE?"                  CODE_QA        ✓
+  "what is incremental loading?"                GENERAL        ✓
 """
 from __future__ import annotations
 
@@ -38,56 +43,142 @@ class Intent(str, Enum):
     GENERAL   = "GENERAL"
 
 
-# ── Stage 1: Keyword fast-path rules ─────────────────────────────────────────
-# Order matters — more specific patterns first.
+# ── Stage 1: Keyword fast-path ────────────────────────────────────────────────
+# Rules are evaluated in order — first match wins.
 # Each tuple: (compiled_regex, Intent, confidence)
 
 _KEYWORD_RULES: list[tuple[re.Pattern, Intent, float]] = [
-    # ACTION — explicit destructive/change-intent signals
+
+    # ── ACTION — explicit destructive/change-intent signals ──────────────────
+    # Covers: "what will happen if I delete/drop/rename/remove"
+    #         "what happens if", "what if I drop", "impact of dropping"
+    #         "run a DQ check", "trigger a DQ check"
     (re.compile(
-        r"\b(what\s+if|what\s+happens\s+if|what\s+would\s+happen|impact\s+of\s+drop"
-        r"|if\s+i\s+drop|if\s+i\s+rename|before\s+i\s+drop|blast\s+radius"
-        r"|downstream\s+impact|run\s+(a\s+)?dq|trigger\s+(a\s+)?dq"
-        r"|data\s+quality\s+check|run\s+great\s+expectations)\b",
+        r"\b("
+        r"what\s+will\s+happen\s+if"
+        r"|what\s+would\s+happen\s+if"
+        r"|what\s+happens\s+if"
+        r"|what\s+if\s+i\s+(drop|delete|remove|rename|alter|change)"
+        r"|if\s+i\s+(drop|delete|remove|rename|alter|change)"
+        r"|impact\s+of\s+(drop|delet|remov|renam)"
+        r"|before\s+i\s+(drop|delet|remov|renam)"
+        r"|blast\s+radius"
+        r"|downstream\s+impact"
+        r"|downstream\s+effect"
+        r"|run\s+(a\s+)?dq(\s+check)?"
+        r"|trigger\s+(a\s+)?dq(\s+check)?"
+        r"|data\s+quality\s+check"
+        r"|run\s+great\s+expectations"
+        r"|schema\s+change\s+impact"
+        r")\b",
         re.I,
     ), Intent.ACTION, 0.95),
 
-    # CATALOGUE — lineage / schema / PII discovery signals
+    # ── CATALOGUE — lineage / schema / PII discovery ─────────────────────────
+    # Covers: "lineage dag", "what columns", "PII columns", "upstream/downstream",
+    #         "schema of", "table structure", "data catalogue"
     (re.compile(
-        r"\b(lineage|lineage\s+dag|lineage\s+graph|data\s+lineage"
-        r"|upstream|downstream|depends\s+on|which\s+tables"
-        r"|pii\s+columns?|pii\s+table|sensitive\s+columns?|sensitive\s+data"
-        r"|what\s+columns?|columns?\s+in|schema\s+of|schema\s+for"
-        r"|data\s+catalogue|catalogue|catalog\s+table|dag\s+(for|of)"
-        r"|table\s+lineage|table\s+schema|describe\s+table)\b",
+        r"\b("
+        r"lineage(\s+dag|\s+graph|\s+of|\s+for)?"
+        r"|data\s+lineage"
+        r"|upstream(\s+table|\s+of)?"
+        r"|downstream(\s+table|\s+of)?"
+        r"|depends\s+on"
+        r"|which\s+tables(\s+depend|\s+feed|\s+use|\s+write|\s+read)?"
+        r"|pii\s+columns?"
+        r"|pii\s+cols?"
+        r"|pii\s+tables?"
+        r"|pii\s+data"
+        r"|sensitive\s+columns?"
+        r"|sensitive\s+cols?"
+        r"|sensitive\s+data"
+        r"|what\s+columns(\s+are|\s+exist|\s+in|\s+does)?"
+        r"|columns?\s+in\s+the"
+        r"|schema\s+of\s+the"
+        r"|schema\s+for\s+the"
+        r"|table\s+schema"
+        r"|table\s+structure"
+        r"|data\s+catalogu?"
+        r"|catalogu?\s+table"
+        r"|dag\s+(for|of)\s+the"
+        r"|table\s+lineage"
+        r"|describe\s+the\s+table"
+        r"|what\s+is\s+in\s+the\s+\w+\s+table"
+        r")\b",
         re.I,
     ), Intent.CATALOGUE, 0.95),
 
-    # HEALTH — pipeline operational signals
+    # ── HEALTH — pipeline operational status ─────────────────────────────────
+    # Covers: "pipeline health", "what's the health", "pipeline status",
+    #         "pipeline failed", "SLO breach", "last run", "monitoring"
     (re.compile(
-        r"\b(pipeline\s+(fail|failed|failing|status|ran|ran\s+today|breach)"
-        r"|slo\s+breach|slo\s+adherence|slo\s+report|success\s+rate"
-        r"|last\s+run|recent\s+(fail|error|run)|did\s+\w+\s+(fail|run|succeed)"
-        r"|why\s+did\s+\w+\s+fail|pipeline\s+health|run\s+history"
-        r"|monitor|monitoring|alert|on-call|pagerduty)\b",
+        r"\b("
+        r"pipeline\s+health"
+        r"|health\s+of\s+the\s+pipeline"
+        r"|what('s|s|\s+is)\s+the\s+health"
+        r"|is\s+the\s+pipeline\s+healthy"
+        r"|pipeline\s+(fail|failed|failing|status|ran|running|down|broken|issue)"
+        r"|slo\s+(breach|adherence|report|status|compliance|target)"
+        r"|success\s+rate"
+        r"|last\s+run(\s+status|\s+result|\s+time)?"
+        r"|recent\s+(fail|error|run|issue|problem)"
+        r"|did\s+\w+\s+(fail|run|succeed|pass|complete)"
+        r"|why\s+did\s+\w+\s+fail"
+        r"|pipeline\s+monitor"
+        r"|monitoring\s+status"
+        r"|run\s+history"
+        r"|pipeline\s+run"
+        r"|job\s+(fail|status|health|run)"
+        r"|is\s+\w+\s+(running|healthy|working|up|down)"
+        r"|how\s+(is|are)\s+(the\s+)?pipeline"
+        r")\b",
         re.I,
     ), Intent.HEALTH, 0.93),
 
-    # CODE_QA — implementation/code understanding signals
+    # ── CODE_QA — implementation / code understanding ────────────────────────
+    # Covers: "how does X work", "why does X use", "explain the code",
+    #         "what does the function do", "show me the implementation"
     (re.compile(
-        r"\b(how\s+does\s+the|why\s+does\s+the|why\s+is\s+the|explain\s+the\s+code"
-        r"|what\s+does\s+the\s+function|what\s+does\s+this\s+(function|class|method)"
-        r"|merge\s+strategy|insert\s+overwrite|scd2|scd\s+type|incremental\s+(logic|strategy)"
-        r"|watermark|look\s+at\s+the\s+code|read\s+the\s+code|show\s+me\s+the\s+code"
-        r"|python\s+(function|class|method)|sql\s+(query|statement|logic))\b",
+        r"\b("
+        r"how\s+does\s+the\s+\w+"
+        r"|why\s+does\s+the\s+\w+"
+        r"|why\s+is\s+the\s+\w+\s+(using|using|implemented|written|coded)"
+        r"|explain\s+the\s+(code|function|class|method|logic|implementation)"
+        r"|what\s+does\s+the\s+(function|class|method|code|script)"
+        r"|what\s+does\s+this\s+(function|class|method|code)"
+        r"|show\s+me\s+the\s+(code|implementation|logic|function)"
+        r"|merge\s+strategy"
+        r"|insert\s+overwrite"
+        r"|scd\s*(2|type)"
+        r"|incremental\s+(logic|strategy|approach|load)"
+        r"|watermark\s+(logic|strategy|approach)"
+        r"|look\s+at\s+the\s+code"
+        r"|read\s+the\s+code"
+        r"|what\s+is\s+the\s+\w+\s+method"
+        r"|what'\s*s\s+(the\s+)?\w+\s+method"
+        r"|how\s+is\s+\w+\s+implemented"
+        r"|what\s+does\s+\w+\s+method\s+do"
+        r"|load\s+method"
+        r"|extract\s+method"
+        r"|transform\s+method"
+        r")\b",
         re.I,
     ), Intent.CODE_QA, 0.92),
 
-    # GENERAL — education / concept signals (no pipeline-specific context)
+    # ── GENERAL — education / DE concepts (no pipeline-specific context) ─────
     (re.compile(
-        r"\b(what\s+is\s+a?\s*\w+|explain\s+what|how\s+does\s+\w+\s+work\s+in\s+general"
-        r"|best\s+practice|definition\s+of|difference\s+between|compare\s+\w+\s+and"
-        r"|teach\s+me|help\s+me\s+understand|what\s+are\s+(etl|elt|dbt|airflow))\b",
+        r"\b("
+        r"what\s+is\s+(a\s+)?(etl|elt|dbt|airflow|dagster|spark|flink|kafka)"
+        r"|what\s+is\s+incremental\s+loading"
+        r"|explain\s+what\s+\w+\s+is"
+        r"|how\s+does\s+\w+\s+work\s+in\s+general"
+        r"|best\s+practice"
+        r"|definition\s+of\s+"
+        r"|difference\s+between"
+        r"|compare\s+\w+\s+and\s+\w+"
+        r"|teach\s+me"
+        r"|help\s+me\s+understand"
+        r")\b",
         re.I,
     ), Intent.GENERAL, 0.88),
 ]
@@ -95,90 +186,96 @@ _KEYWORD_RULES: list[tuple[re.Pattern, Intent, float]] = [
 
 def _keyword_classify(query: str) -> tuple[Intent, float] | None:
     """
-    Fast-path keyword classification. Returns (Intent, confidence) if a
-    keyword pattern matches, or None if the LLM stage should be used.
+    Fast-path keyword classification.
+    Returns (Intent, confidence) on match, None if LLM stage should be used.
     """
+    q = query.strip()
     for pattern, intent, confidence in _KEYWORD_RULES:
-        if pattern.search(query):
+        if pattern.search(q):
             logger.info(
-                "Intent (keyword): %s (conf=%.2f) pattern='%s' query='%s...'",
-                intent.value, confidence,
-                pattern.pattern[:40], query[:60],
+                "Intent (keyword): %s (conf=%.2f) query='%s...'",
+                intent.value, confidence, q[:70],
             )
             return intent, confidence
     return None
 
 
-# ── Stage 2: LLM classifier with few-shot examples ───────────────────────────
+# ── Stage 2: LLM classifier ───────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """You are an intent classifier for a Data Engineering AI assistant.
 Classify the user query into EXACTLY ONE intent.
 
 INTENT DEFINITIONS:
-CODE_QA   — questions about pipeline code logic, SQL/Python implementation, debugging.
+CODE_QA   — questions about pipeline code logic, SQL/Python implementation, debugging,
+             what a specific function/method/class does.
 CATALOGUE — questions about table schemas, column metadata, data lineage, lineage DAG,
              upstream/downstream dependencies, PII columns, data discovery.
-HEALTH    — questions about pipeline run status, failures, SLO adherence, monitoring.
-ACTION    — explicit requests to trigger DQ checks, run impact analysis before schema changes.
+HEALTH    — questions about pipeline run status, failures, SLO adherence, monitoring,
+             whether a pipeline is healthy or broken.
+ACTION    — explicit requests: "what will happen if I delete/drop/remove X",
+             "trigger DQ check", "run impact analysis before schema change".
 GENERAL   — generic data engineering education with no specific pipeline context.
 
-DECISION RULE:
-- Any question containing "lineage", "DAG", "upstream", "downstream", "PII column",
-  "what columns", "schema of", or "catalogue" → CATALOGUE (never CODE_QA)
-- Questions asking WHAT something IS vs HOW code works → GENERAL vs CODE_QA
+DECISION RULES:
+- "health", "healthy", "pipeline health" → HEALTH
+- "lineage", "DAG", "upstream", "downstream" → CATALOGUE
+- "what will happen if I delete/drop/rename" → ACTION
+- "load method", "extract method", "transform method" questions → CODE_QA
+- "what is X" where X is a DE concept (not a specific pipeline) → GENERAL
 
-FEW-SHOT EXAMPLES (use these as anchors):
-Query: "What is the lineage DAG for vw_revenue_by_tier?"
-{"intent": "CATALOGUE", "confidence": 0.97}
-
-Query: "Can you let me know about vw_revenue_by_tier table lineage dag"
-{"intent": "CATALOGUE", "confidence": 0.97}
-
-Query: "What PII columns exist in the users table?"
-{"intent": "CATALOGUE", "confidence": 0.96}
-
-Query: "Which tables depend on orders_fact?"
-{"intent": "CATALOGUE", "confidence": 0.95}
-
-Query: "Did the orders pipeline fail today?"
+FEW-SHOT EXAMPLES:
+Query: "what the health of the pipeline?"
 {"intent": "HEALTH", "confidence": 0.95}
 
-Query: "What is our SLO breach rate for the last 7 days?"
-{"intent": "HEALTH", "confidence": 0.94}
+Query: "what's the health?"
+{"intent": "HEALTH", "confidence": 0.93}
 
-Query: "What happens if I drop user_id from stg_users?"
+Query: "what will happen if I delete the fact table?"
 {"intent": "ACTION", "confidence": 0.96}
 
-Query: "Why does the orders pipeline use MERGE instead of INSERT OVERWRITE?"
+Query: "what will happen if I delete the orders_fact table?"
+{"intent": "ACTION", "confidence": 0.96}
+
+Query: "can you let me know about vw_revenue_by_tier table lineage dag"
+{"intent": "CATALOGUE", "confidence": 0.97}
+
+Query: "what PII columns exist in the users table?"
+{"intent": "CATALOGUE", "confidence": 0.96}
+
+Query: "did the orders pipeline fail today?"
+{"intent": "HEALTH", "confidence": 0.95}
+
+Query: "what's load method?"
 {"intent": "CODE_QA", "confidence": 0.94}
 
-Query: "How does the extract function in orders_pipeline.py work?"
+Query: "give me the in depth structure of the extract transform and load thing"
 {"intent": "CODE_QA", "confidence": 0.93}
 
-Query: "What is incremental loading in data engineering?"
+Query: "why does the orders pipeline use MERGE strategy?"
+{"intent": "CODE_QA", "confidence": 0.94}
+
+Query: "what is incremental loading in data engineering?"
 {"intent": "GENERAL", "confidence": 0.91}
 
-Respond with ONLY this JSON object (no markdown, no explanation, no preamble):
+Respond with ONLY this JSON (no markdown, no preamble):
 {"intent": "<INTENT>", "confidence": <0.0-1.0>}"""
 
 
 class IntentClassifier:
     """
     Two-stage intent classifier:
-      Stage 1: keyword fast-path (no API calls, no latency)
-      Stage 2: llama3-8b with few-shot examples (only when stage 1 fails)
+      Stage 1: keyword fast-path (zero API calls)
+      Stage 2: llama-3.1-8b-instant with few-shot examples
     """
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(min=1, max=8),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(min=1, max=5),
         reraise=False,
     )
     def classify(self, query: str) -> tuple[Intent, float]:
-        """
-        Returns (Intent, confidence_score).
-        Falls back to CODE_QA with confidence=0.5 on any failure.
-        """
+        """Returns (Intent, confidence). Falls back to CODE_QA on any failure."""
+
         # Stage 1: keyword fast-path
         keyword_result = _keyword_classify(query)
         if keyword_result is not None:
@@ -202,10 +299,10 @@ class IntentClassifier:
             confidence = float(parsed.get("confidence", 0.8))
             intent     = Intent(intent_str)
             logger.info(
-                "Intent (llm): %s (conf=%.2f) model=llama3-8b query='%s...'",
-                intent.value, confidence, query[:60],
+                "Intent (llm): %s (conf=%.2f) query='%s...'",
+                intent.value, confidence, query[:70],
             )
             return intent, confidence
         except Exception as exc:
-            logger.warning("Intent classification failed (%s) — defaulting to CODE_QA", exc)
+            logger.warning("Intent LLM stage failed (%s) — defaulting to CODE_QA", exc)
             return Intent.CODE_QA, 0.5

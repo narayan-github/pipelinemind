@@ -1,48 +1,29 @@
 """
 LLM Router — routes each call type to the cheapest/fastest model tier.
 
-Call type taxonomy and rationale:
-  SUMMARY   → llama3-8b-8192
-              Batch summaries at ingestion time.  Quality needed: medium.
-              Volume: high.  Function calling: no.
+Model update (2024-05-14):
+  llama3-8b-8192   → DECOMMISSIONED by Groq
+  llama3-70b-8192  → DECOMMISSIONED by Groq
 
-  INTENT    → llama3-8b-8192
-              JSON-only output of 2 fields (intent + confidence).
-              Needs: zero creativity, deterministic, 50 tokens max.
-              Previously used 70b — complete waste of quota.
-
-  HYDE      → llama3-8b-8192
-              Hypothetical document generation.  Medium creativity.
-              Does NOT need function calling or chain-of-thought depth.
-              Previously used 70b — unnecessary.
-
-  AGENT     → llama-3.3-70b-versatile
-              Only call type that NEEDS function calling + multi-step reasoning.
-              70b stays here and only here.
+Current model assignments:
+  SUMMARY / INTENT / HYDE → llama-3.1-8b-instant  (fast, cheap, good for structured tasks)
+  AGENT                   → llama-3.3-70b-versatile (function-calling, reasoning)
 
 Rate-limit strategy:
-  - Groq free tier: ~14,400 tokens/min for llama3-70b, ~30,000 for llama3-8b
-  - By moving INTENT + HYDE to 8b, we free ~60-70% of 70b quota for the agent
-  - On 429, tenacity retries with exponential backoff (already in Groq client)
-  - If a second GROQ_API_KEY_SECONDARY is set in .env, the router round-robins
-    between the two keys on 429 to double effective quota
+  - By routing INTENT + HYDE to 8b-instant, ~70% of the 70b quota is preserved
+    for agent function-calling loops which actually need the large model.
+  - Secondary key rotation: set GROQ_API_KEY_SECONDARY in .env to double quota.
 """
 from __future__ import annotations
 
 import logging
 import os
-import time
 from enum import Enum
 from functools import lru_cache
 from typing import Any
 
 from groq import Groq, RateLimitError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from pm_config import settings
 
@@ -50,21 +31,23 @@ logger = logging.getLogger(__name__)
 
 
 class CallType(str, Enum):
-    SUMMARY = "summary"   # ingestion-time chunk summaries
-    INTENT  = "intent"    # query intent classification
-    HYDE    = "hyde"      # hypothetical document generation
-    AGENT   = "agent"     # function-calling reasoning loop
+    SUMMARY = "summary"
+    INTENT  = "intent"
+    HYDE    = "hyde"
+    AGENT   = "agent"
 
 
-# Model assignment per call type — all changeable via .env overrides
-_MODEL_MAP: dict[CallType, str] = {
-    CallType.SUMMARY: settings.groq_model_fast,    # llama3-8b-8192
-    CallType.INTENT:  settings.groq_model_fast,    # llama3-8b-8192  (was 70b — fixed)
-    CallType.HYDE:    settings.groq_model_fast,    # llama3-8b-8192  (was 70b — fixed)
-    CallType.AGENT:   settings.groq_model_agent,   # llama-3.3-70b-versatile
-}
+# Model assignment — reads from settings which reads from .env
+# This means you can override any model via .env without code changes.
+def _build_model_map() -> dict[CallType, str]:
+    return {
+        CallType.SUMMARY: settings.groq_model_fast,    # llama-3.1-8b-instant
+        CallType.INTENT:  settings.groq_model_fast,    # llama-3.1-8b-instant
+        CallType.HYDE:    settings.groq_model_fast,    # llama-3.1-8b-instant
+        CallType.AGENT:   settings.groq_model_agent,   # llama-3.3-70b-versatile
+    }
 
-# Per-call-type token limits
+
 _MAX_TOKENS: dict[CallType, int] = {
     CallType.SUMMARY: 200,
     CallType.INTENT:  60,
@@ -72,16 +55,15 @@ _MAX_TOKENS: dict[CallType, int] = {
     CallType.AGENT:   2048,
 }
 
-# Per-call-type temperature
 _TEMPERATURE: dict[CallType, float] = {
     CallType.SUMMARY: 0.1,
-    CallType.INTENT:  0.0,   # fully deterministic for classification
+    CallType.INTENT:  0.0,
     CallType.HYDE:    0.35,
     CallType.AGENT:   0.2,
 }
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)
 def _get_client(api_key: str) -> Groq:
     return Groq(api_key=api_key)
 
@@ -91,9 +73,8 @@ def _primary_client() -> Groq:
 
 
 def _secondary_client() -> Groq | None:
-    """Return a secondary Groq client if GROQ_API_KEY_SECONDARY is configured."""
     secondary = os.environ.get("GROQ_API_KEY_SECONDARY", "").strip()
-    if secondary:
+    if secondary and secondary != settings.groq_api_key:
         return _get_client(secondary)
     return None
 
@@ -102,11 +83,13 @@ class LLMRouter:
     """
     Routes LLM calls to the appropriate model tier.
     Implements key-rotation on 429 if a secondary key is configured.
+    Logs model usage statistics for debugging.
     """
 
     def __init__(self) -> None:
         self._call_counts: dict[str, int] = {}
         self._rate_limit_hits = 0
+        self._model_errors: dict[str, int] = {}
 
     def complete(
         self,
@@ -116,12 +99,9 @@ class LLMRouter:
         tool_choice: str = "auto",
         extra_kwargs: dict | None = None,
     ) -> Any:
-        """
-        Route a completion request to the correct model tier.
-        Automatically falls back to secondary key on 429.
-        """
-        model      = _MODEL_MAP[call_type]
-        max_tokens = _MAX_TOKENS[call_type]
+        model_map   = _build_model_map()
+        model       = model_map[call_type]
+        max_tokens  = _MAX_TOKENS[call_type]
         temperature = _TEMPERATURE[call_type]
 
         kwargs: dict = {
@@ -136,37 +116,44 @@ class LLMRouter:
         if extra_kwargs:
             kwargs.update(extra_kwargs)
 
-        # Track call volume per type
-        self._call_counts[call_type.value] = self._call_counts.get(call_type.value, 0) + 1
-
+        self._call_counts[call_type.value] = (
+            self._call_counts.get(call_type.value, 0) + 1
+        )
+        logger.debug("LLMRouter: %s → %s", call_type.value, model)
         return self._call_with_fallback(kwargs)
 
     def _call_with_fallback(self, kwargs: dict) -> Any:
-        """Try primary key; on 429 try secondary key once; then let tenacity handle retries."""
         try:
             return _primary_client().chat.completions.create(**kwargs)
         except RateLimitError as exc:
             self._rate_limit_hits += 1
             logger.warning(
-                "Groq 429 on primary key (total=%d) | model=%s",
+                "Groq 429 on primary key (total_hits=%d) model=%s",
                 self._rate_limit_hits, kwargs.get("model"),
             )
             secondary = _secondary_client()
             if secondary:
-                logger.info("Attempting secondary Groq key")
+                logger.info("Retrying with secondary Groq key")
                 try:
                     return secondary.chat.completions.create(**kwargs)
                 except RateLimitError:
-                    logger.warning("Secondary key also rate-limited — waiting for tenacity retry")
-            raise  # let tenacity in caller handle the final retry
+                    logger.warning("Secondary key also rate-limited")
+            raise
+        except Exception as exc:
+            model = kwargs.get("model", "unknown")
+            self._model_errors[model] = self._model_errors.get(model, 0) + 1
+            logger.error("LLMRouter error for model %s: %s", model, exc)
+            raise
 
     def stats(self) -> dict:
         return {
             "call_counts":      self._call_counts,
             "rate_limit_hits":  self._rate_limit_hits,
-            "model_assignment": {k.value: v for k, v in _MODEL_MAP.items()},
+            "model_errors":     self._model_errors,
+            "model_assignment": {
+                k.value: v for k, v in _build_model_map().items()
+            },
         }
 
 
-# Module-level singleton — import and use directly
 router = LLMRouter()
