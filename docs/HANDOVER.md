@@ -10,7 +10,7 @@ on PipelineMind without any prior context. Read every section.
 - **Name:** PipelineMind
 - **Version:** 0.2.0
 - **Purpose:** Production-grade RAG-powered Data Engineering AI assistant with agentic MCP tools
-- **Root path:** `/Users/as-mac-1282/Developer/genai_mini`
+- **Root path:** `pipelinemind`
 - **Python:** 3.11.1 (venv at `.venv/`)
 - **LLM provider:** Groq API (`pm_config.py` has three model tiers)
 - **Status:** All tests passing, all scripts working, API and UI functional
@@ -229,7 +229,7 @@ tool executed, result returned
 
 ## How to Resume Development
 
-1. `cd /Users/as-mac-1282/Developer/genai_mini`
+1. `cd pipelinemind`
 2. `source .venv/bin/activate && export PYTHONPATH="."`
 3. Verify state: `pytest tests/ -v --tb=short`
 4. If DuckDB is missing: `python db/seeder.py`

@@ -2,7 +2,7 @@
 
 All commands assume you are in the project root:
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini
+cd pipelinemind
 ```
 
 ---

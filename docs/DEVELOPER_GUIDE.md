@@ -9,7 +9,7 @@ How to extend, test, and contribute to PipelineMind.
 ### Standard run cycle
 
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini
+cd pipelinemind
 source .venv/bin/activate
 export PYTHONPATH="."
 
