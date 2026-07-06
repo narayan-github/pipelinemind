@@ -52,7 +52,7 @@ affected downstream asset — dashboards, marts, and ML features — before code
 ### 1. Clone and enter the project
 
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini/pipelinemind
+cd /Users/as-mac-1282/Developer/genai_mini
 ```
 
 ### 2. Activate the virtual environment
