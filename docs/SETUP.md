@@ -23,7 +23,7 @@ Complete installation and configuration guide for local development and Docker d
 ### Step 1: Navigate to the project
 
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini/pipelinemind
+cd /Users/as-mac-1282/Developer/genai_mini
 ```
 
 ### Step 2: Create and activate the virtual environment
@@ -172,7 +172,7 @@ Expected: `{"status":"ok","environment":"development",...}`
 ### Step 8: Start the Streamlit UI (new terminal)
 
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini/pipelinemind
+cd /Users/as-mac-1282/Developer/genai_mini
 source .venv/bin/activate
 export PYTHONPATH="."
 streamlit run ui/app.py --server.port 8501 --server.address localhost
@@ -193,7 +193,7 @@ Open http://localhost:8501 in your browser.
 ### Build and start
 
 ```bash
-cd /Users/as-mac-1282/Developer/genai_mini/pipelinemind
+cd /Users/as-mac-1282/Developer/genai_mini
 
 # Ensure .env is configured
 cp .env.example .env
